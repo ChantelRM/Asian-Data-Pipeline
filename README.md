@@ -1,6 +1,6 @@
 # Asian Drama Analytics Warehouse — Starter Kit
 
-![CI](https://github.com/YOUR_USERNAME/YOUR_REPO/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/ChantelRM/Asian-Data-Pipleine/actions/workflows/ci.yml/badge.svg)
 
 A skeleton for a data warehouse combining a batch Kaggle CSV and a live
 TMDb API source into a Postgres star schema, orchestrated by Airflow.
