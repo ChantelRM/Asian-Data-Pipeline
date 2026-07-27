@@ -1,0 +1,119 @@
+version: "3.8"
+
+# Design note (tradeoff worth knowing): this stack uses TWO Postgres instances —
+# one for Airflow's own metadata (task state, DAG runs, connections) and one
+# for the actual warehouse (fact/dim tables). You could run both in a single
+# Postgres instance with two schemas (airflow_meta / warehouse) instead — that
+# saves a container and some RAM, which matters if you're on a laptop with
+# limited resources. The two-instance split is closer to how you'd do it in
+# production (blast radius: nuking Airflow's metadata db to reset state never
+# risks your actual data), and it's a cleaner story for your project writeup
+# ("orchestration plane vs data plane"). If Docker Desktop is struggling on
+# your machine, collapsing to one Postgres + two schemas is a legitimate,
+# easy simplification — just update DB_HOST/DB_NAME env vars accordingly.
+
+services:
+  postgres-airflow:
+    image: postgres:16
+    container_name: adw-postgres-airflow
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow_meta
+    volumes:
+      - airflow_meta_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    ports:
+      - "5433:5432"
+
+  postgres-warehouse:
+    image: postgres:16
+    container_name: adw-postgres-warehouse
+    environment:
+      POSTGRES_USER: warehouse
+      POSTGRES_PASSWORD: warehouse
+      POSTGRES_DB: drama_warehouse
+    volumes:
+      - warehouse_data:/var/lib/postgresql/data
+      - ./src/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "warehouse"]
+      interval: 5s
+      retries: 5
+    ports:
+      - "5432:5432"
+
+  airflow-init:
+    image: apache/airflow:2.9.3-python3.11
+    container_name: adw-airflow-init
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow_meta
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    entrypoint: /bin/bash
+    command: >
+      -c "airflow db migrate &&
+          airflow users create --username admin --password admin
+          --firstname Admin --lastname User --role Admin --email admin@example.com"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./src:/opt/airflow/src
+      - ./data:/opt/airflow/data
+      - ./logs:/opt/airflow/logs
+
+  airflow-webserver:
+    image: apache/airflow:2.9.3-python3.11
+    container_name: adw-airflow-webserver
+    restart: always
+    depends_on:
+      - airflow-init
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow_meta
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      TMDB_API_KEY: ${TMDB_API_KEY}
+      WAREHOUSE_DB_HOST: postgres-warehouse
+      WAREHOUSE_DB_NAME: drama_warehouse
+      WAREHOUSE_DB_USER: warehouse
+      WAREHOUSE_DB_PASSWORD: warehouse
+    ports:
+      - "8080:8080"
+    command: webserver
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./src:/opt/airflow/src
+      - ./data:/opt/airflow/data
+      - ./logs:/opt/airflow/logs
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.3-python3.11
+    container_name: adw-airflow-scheduler
+    restart: always
+    depends_on:
+      - airflow-init
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow_meta
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      TMDB_API_KEY: ${TMDB_API_KEY}
+      WAREHOUSE_DB_HOST: postgres-warehouse
+      WAREHOUSE_DB_NAME: drama_warehouse
+      WAREHOUSE_DB_USER: warehouse
+      WAREHOUSE_DB_PASSWORD: warehouse
+      _PIP_ADDITIONAL_REQUIREMENTS: "pandera[io] psycopg2-binary sqlalchemy requests python-dotenv"
+    command: scheduler
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./src:/opt/airflow/src
+      - ./data:/opt/airflow/data
+      - ./logs:/opt/airflow/logs
+
+volumes:
+  airflow_meta_data:
+  warehouse_data:
